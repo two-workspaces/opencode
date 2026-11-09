@@ -2,6 +2,32 @@
 set -e
 : "${OPENCODE_SERVER_PASSWORD:?OPENCODE_SERVER_PASSWORD is required - it is the only lock on this box}"
 
+# Railway's Free plan caps a service at 0.5 GB, and OpenCode is OOM-killed on the
+# first prompt there. Railway counts each kill as a failed deploy, so on a service
+# under ~1 GB serve a page saying what's needed instead of starting OpenCode.
+mem=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo max)
+if [ "$mem" != max ] && [ "$mem" -lt $((900 * 1024 * 1024)) ] 2>/dev/null; then
+  mkdir -p /run/gate
+  cat > /run/gate/index.html <<HTML
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCode needs more memory</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem}</style></head>
+<body><h1>OpenCode needs at least 1 GB of memory</h1>
+<p>This service is limited to $((mem / 1024 / 1024)) MB, which is Railway's Free plan. OpenCode starts there but is killed as soon as the agent works, so it hasn't been started.</p>
+<p>The Trial plan (1 GB) runs it, and Hobby gives agents room for builds and tests. Upgrade, then redeploy this service.</p></body></html>
+HTML
+  cat > /etc/nginx/sites-enabled/default <<CFG
+server {
+  listen ${PORT} default_server;
+  listen [::]:${PORT} default_server;
+  root /run/gate;
+  location = /healthcheck { return 200 "ok"; }
+  location / { try_files /index.html =404; }
+}
+CFG
+  echo "== memory limit $((mem / 1024 / 1024)) MB is under the 1 GB OpenCode needs; serving instructions on :${PORT} instead"
+  exec nginx -g 'daemon off;'
+fi
+
 # /root is a Railway volume: empty on first boot, root-owned. Seed dotfiles once
 # (flag file, not per-file checks: local docker pre-copies the image's /root into a
 # fresh volume, which would otherwise shadow our skel).
@@ -79,4 +105,10 @@ nginx
 echo "== opencode box ready: web UI on :${PORT}, sshd on :22, $(opencode --version)"
 cd /root/workspace
 # With OPENCODE_SERVER_PASSWORD set, serve does not print the password.
-exec opencode serve --hostname 127.0.0.1 --port 4096
+# Not exec'd: if the kernel OOM-kills OpenCode mid-task, the container stays up
+# (and so do sshd and the volume's work) and OpenCode comes back on its own.
+while :; do
+  opencode serve --hostname 127.0.0.1 --port 4096 || true
+  echo "== opencode exited; restarting in 2 s"
+  sleep 2
+done

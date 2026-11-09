@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 PORT=8080 OPENCODE_DISABLE_AUTOU
 # Toolbox the agent can use: git, gh, Node 22, Python 3 + uv, build tools, ripgrep, ssh server.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg git openssh-server nginx-light tmux \
-      vim nano less htop ripgrep fd-find jq unzip zip tree procps sudo locales \
+      vim nano less htop ripgrep fd-find jq unzip zip tree procps sudo locales tini \
       python3 python3-pip python3-venv build-essential \
       iputils-ping dnsutils net-tools \
   && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -32,4 +32,5 @@ COPY entrypoint.sh /entrypoint.sh
 COPY drop-file-cache oc /usr/local/bin/
 
 EXPOSE 22 8080
-ENTRYPOINT ["/entrypoint.sh"]
+# tini reaps zombies and forwards Railway's stop signal to the restart loop and OpenCode.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]
